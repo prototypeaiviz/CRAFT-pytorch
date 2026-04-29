@@ -137,7 +137,7 @@ if __name__ == '__main__':
     print(f"Running on: {device}\n")
 
     # Build model (pretrained=False avoids needing weights file for this demo)
-    model = CRAFT(pretrained=False, freeze=False).to(device)
+    model = CRAFT(pretrained=True, freeze=True).to(device)
     model.eval()
 
     # Input: one fake RGB image, 640x640
