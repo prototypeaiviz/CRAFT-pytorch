@@ -327,3 +327,185 @@ def adjustResultCoordinates(polys, ratio_w, ratio_h, ratio_net = 2):
             if polys[k] is not None:
                 polys[k] *= (ratio_w * ratio_net, ratio_h * ratio_net)
     return polys
+
+
+if __name__ == '__main__':
+    # -----------------------------------------------------------------------
+    # This demo builds fake-but-realistic score maps by hand so you can see
+    # exactly what each function in this file does without needing a trained
+    # model.  Every example is saved as a JPG so you can open it visually.
+    #
+    # Examples covered:
+    #   1. warpCoord              — un-warp a point through an inverse matrix
+    #   2. getDetBoxes_core       — threshold maps → connected components → boxes
+    #   3. getDetBoxes (poly=False) — the public wrapper, rect output
+    #   4. getDetBoxes (poly=True)  — the public wrapper, polygon output
+    #   5. adjustResultCoordinates  — scale boxes back to original image size
+    # -----------------------------------------------------------------------
+
+    # ── shared canvas size ──────────────────────────────────────────────────
+    H, W = 200, 400   # fake heatmap size (think of it as the network output)
+
+    # -----------------------------------------------------------------------
+    # Helper: draw boxes/polys on a colour image and save it
+    # -----------------------------------------------------------------------
+    def save_visual(filename, canvas, boxes, polys=None, color_box=(0,255,0), color_poly=(0,0,255)):
+        img = canvas.copy()
+        for box in boxes:
+            pts = np.array(box, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(img, [pts], isClosed=True, color=color_box, thickness=2)
+        if polys:
+            for poly in polys:
+                if poly is not None:
+                    pts = np.array(poly, dtype=np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(img, [pts], isClosed=True, color=color_poly, thickness=2)
+        cv2.imwrite(filename, img)
+        print(f"  Saved → {filename}")
+
+    # -----------------------------------------------------------------------
+    # EXAMPLE 1 — warpCoord
+    # -----------------------------------------------------------------------
+    print("=" * 60)
+    print("EXAMPLE 1 — warpCoord")
+    print("=" * 60)
+    # Imagine a word was cropped and straightened using a perspective transform M.
+    # Minv is the inverse of that transform — it maps coordinates in the
+    # straightened crop back to where they are in the original image.
+    #
+    # Here we use the identity matrix so the point comes back unchanged,
+    # which makes it easy to verify the math is correct.
+    Minv_identity = np.eye(3)
+    point_in_crop = (50.0, 30.0)
+    point_in_original = warpCoord(Minv_identity, point_in_crop)
+    print(f"  Input point (in crop)      : {point_in_crop}")
+    print(f"  Output point (in original) : {point_in_original}")
+    print(f"  With identity Minv the point is unchanged — as expected.\n")
+
+    # Now use a real translation matrix: shift x+10, y+20
+    Minv_translate = np.array([[1, 0, 10],
+                                [0, 1, 20],
+                                [0, 0,  1]], dtype=float)
+    shifted = warpCoord(Minv_translate, point_in_crop)
+    print(f"  With translate Minv (+10x, +20y):")
+    print(f"  Input  : {point_in_crop}")
+    print(f"  Output : {shifted}  (should be [60, 50])\n")
+
+    # -----------------------------------------------------------------------
+    # EXAMPLE 2 — build fake score maps with 3 "words" drawn on them
+    # -----------------------------------------------------------------------
+    print("=" * 60)
+    print("EXAMPLE 2 — getDetBoxes_core  (threshold maps → boxes)")
+    print("=" * 60)
+
+    # Create blank score maps (float32, values 0..1)
+    textmap = np.zeros((H, W), dtype=np.float32)
+    linkmap = np.zeros((H, W), dtype=np.float32)
+
+    # Draw 3 fake "words" as bright rectangles on the text map.
+    # Each rectangle represents the character-region score blob for one word.
+    # word1: a short horizontal word on the left
+    cv2.rectangle(textmap, (20,  60), (100, 90),  0.9, -1)   # filled rect, score=0.9
+    # word2: a medium word in the centre
+    cv2.rectangle(textmap, (150, 60), (270, 90),  0.85, -1)
+    # word3: a longer word on the right
+    cv2.rectangle(textmap, (300, 60), (380, 90),  0.8, -1)
+
+    # Draw link blobs between word1-word2 and word2-word3 on the link map.
+    # These simulate the affinity signal that connects characters within a word.
+    cv2.rectangle(linkmap, (100, 65), (150, 85),  0.6, -1)   # gap between word1 & word2
+    cv2.rectangle(linkmap, (270, 65), (300, 85),  0.6, -1)   # gap between word2 & word3
+
+    # Save the raw maps as heatmap images so you can see what we're working with
+    text_vis = (np.clip(textmap, 0, 1) * 255).astype(np.uint8)
+    link_vis = (np.clip(linkmap, 0, 1) * 255).astype(np.uint8)
+    cv2.imwrite("demo_textmap.jpg", cv2.applyColorMap(text_vis, cv2.COLORMAP_JET))
+    cv2.imwrite("demo_linkmap.jpg", cv2.applyColorMap(link_vis, cv2.COLORMAP_JET))
+    print("  Saved → demo_textmap.jpg  (character region score map)")
+    print("  Saved → demo_linkmap.jpg  (affinity/link score map)\n")
+
+    # Run getDetBoxes_core with default-like thresholds
+    text_threshold = 0.7   # peak inside a blob must exceed this to count as text
+    link_threshold = 0.4   # link map binarisation threshold
+    low_text       = 0.4   # lower threshold to grow the initial text mask
+
+    (boxes,
+     labels,
+     mapper) = getDetBoxes_core(
+        textmap,
+        linkmap,
+        text_threshold,
+        link_threshold,
+        low_text
+    )
+
+    print(f"  text_threshold={text_threshold}, link_threshold={link_threshold}, low_text={low_text}")
+    print(f"  Number of boxes found      : {len(boxes)}")
+    for i, box in enumerate(boxes):
+        print(f"  Box {i}: {box.astype(int).tolist()}")
+
+    # Visualise boxes on a grey canvas
+    canvas = cv2.cvtColor((text_vis), cv2.COLOR_GRAY2BGR)
+    save_visual("demo_boxes_core.jpg", canvas, boxes)
+    print()
+
+    # -----------------------------------------------------------------------
+    # EXAMPLE 3 — getDetBoxes  (public wrapper, rect mode)
+    # -----------------------------------------------------------------------
+    print("=" * 60)
+    print("EXAMPLE 3 — getDetBoxes  (poly=False → rectangles)")
+    print("=" * 60)
+    boxes_rect, polys_none = getDetBoxes(
+        textmap, linkmap, text_threshold, link_threshold, low_text, poly=False
+    )
+    print(f"  Boxes  : {len(boxes_rect)}")
+    print(f"  Polys  : {polys_none}  ← all None because poly=False")
+    save_visual("demo_getdetboxes_rect.jpg", canvas, boxes_rect)
+    print()
+
+    # -----------------------------------------------------------------------
+    # EXAMPLE 4 — getDetBoxes  (poly=True → polygons)
+    # -----------------------------------------------------------------------
+    print("=" * 60)
+    print("EXAMPLE 4 — getDetBoxes  (poly=True → polygons)")
+    print("=" * 60)
+    # Polygon mode tries to fit a tight polygon around each word instead of a
+    # rectangle.  It may return None for some boxes if they are too small or
+    # the polygon algorithm can't converge — in that case the box is used instead.
+    boxes_poly, polys = getDetBoxes(
+        textmap, linkmap, text_threshold, link_threshold, low_text, poly=True
+    )
+    print(f"  Boxes  : {len(boxes_poly)}")
+    for i, poly in enumerate(polys):
+        if poly is not None:
+            print(f"  Poly {i} : {len(poly)} vertices  → {poly.astype(int).tolist()}")
+        else:
+            print(f"  Poly {i} : None  (polygon failed — will fall back to box)")
+    save_visual("demo_getdetboxes_poly.jpg", canvas, boxes_poly, polys)
+    print()
+
+    # -----------------------------------------------------------------------
+    # EXAMPLE 5 — adjustResultCoordinates
+    # -----------------------------------------------------------------------
+    print("=" * 60)
+    print("EXAMPLE 5 — adjustResultCoordinates")
+    print("=" * 60)
+    # The heatmap is half the size of the network input (ratio_net=2),
+    # and the network input was itself a resized version of the original image.
+    #
+    # Suppose the original image was 800×1600 px and was resized to fit in
+    # canvas_size=1280 — so the longest side (1600) was scaled to 1280.
+    # resize_ratio = 1280 / 1600 = 0.8
+    # ratio_w = ratio_h = 1 / resize_ratio = 1.25  (to undo the shrink)
+    ratio_w = 1.25
+    ratio_h = 1.25
+
+    print(f"  Before scaling — box 0 vertices:")
+    print(f"  {boxes_rect[0].astype(int).tolist()}")
+
+    # adjustResultCoordinates modifies the array in-place via multiplication
+    boxes_scaled = adjustResultCoordinates(list(boxes_rect), ratio_w, ratio_h, ratio_net=2)
+
+    print(f"  After  scaling (ratio_w={ratio_w}, ratio_h={ratio_h}, ratio_net=2) — box 0:")
+    print(f"  {boxes_scaled[0].astype(int).tolist()}")
+    print(f"  Each coordinate was multiplied by {ratio_w} × 2 = {ratio_w*2}")
+    print(f"  → coordinates now live in the original 800×1600 image space")
