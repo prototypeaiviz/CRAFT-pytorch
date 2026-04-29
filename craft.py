@@ -156,6 +156,7 @@ if __name__ == '__main__':
         print("=" * 65)
         print(" ENCODER  —  VGG16-BN  (basenet)")
         print("=" * 65)
+        # Output of the VGG
         sources = model.basenet(x)
         # sources is a namedtuple: fc7, relu5_3, relu4_3, relu3_2, relu2_2
         names   = ["fc7      (slice5)", "relu5_3  (slice4)", "relu4_3  (slice3)",
@@ -173,9 +174,11 @@ if __name__ == '__main__':
         print("=" * 65)
 
         # --- upconv1: fc7 + relu5_3 -----------------------------------------
+        # put all the channels togather they ahve same size which is 40 by 40, you add 1024+512
         cat1 = torch.cat([sources[0], sources[1]], dim=1)
         print(f"  cat(fc7, relu5_3)             {fmt(cat1)}"
               f"  ← {sources[0].shape[1]}+{sources[1].shape[1]} channels merged")
+        # this is after up sampling
         y = model.upconv1(cat1)
         print(f"  after upconv1                 {fmt(y)}"
               f"  ← double_conv reduces to 256 ch\n")
