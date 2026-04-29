@@ -97,3 +97,73 @@ def cvt2HeatmapImg(img):
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
     img = cv2.applyColorMap(img, cv2.COLORMAP_JET)
     return img
+
+
+# ---------------------------------------------------------------------------
+# Example: demonstrates every function in this file on a single image.
+#
+# What it does step by step:
+#   1. loadImage          — read the file from disk as an RGB uint8 array
+#   2. resize_aspect_ratio — scale it down (max side = 1280px), pad to 32-multiples
+#   3. normalizeMeanVariance — subtract ImageNet mean, divide by ImageNet std
+#   4. denormalizeMeanVariance — reverse step 3 (proves round-trip works)
+#   5. cvt2HeatmapImg     — treat the red channel of the normalised image as a
+#                           fake score map and visualise it as a JET heatmap
+#   6. cv2.imwrite        — save all intermediate results to disk so you can
+#                           open them and see what each step actually does
+#
+# Run from the project root:
+#   python imgproc.py path/to/any_image.jpg
+# ---------------------------------------------------------------------------
+def example_usage(image_path):
+    # ---- Step 1: Load -------------------------------------------------------
+    # Returns a (H, W, 3) uint8 array in RGB order.
+    img = loadImage(image_path)
+    print(f"[1] Loaded image shape : {img.shape}  dtype: {img.dtype}")
+    # Save: convert RGB → BGR because OpenCV saves in BGR
+    cv2.imwrite("example_1_loaded.jpg", img[:, :, ::-1])
+
+    # ---- Step 2: Resize & pad -----------------------------------------------
+    # square_size=1280 : the longest side will be at most 1280 px
+    # mag_ratio=1.5    : first try to upscale by 1.5×, then cap at 1280
+    # interpolation    : cv2.INTER_LINEAR is a good general-purpose choice
+    resized, ratio, size_heatmap = resize_aspect_ratio(
+        img, square_size=1280, interpolation=cv2.INTER_LINEAR, mag_ratio=1
+    )
+    print(f"[2] Resized shape      : {resized.shape}  ratio: {ratio:.4f}")
+    print(f"    Expected heatmap   : {size_heatmap}  (half of resized w×h)")
+    # resized is float32 [0,255] — clamp before saving
+    cv2.imwrite("example_2_resized.jpg", np.clip(resized, 0, 255).astype(np.uint8)[:, :, ::-1])
+
+    # ---- Step 3: Normalise --------------------------------------------------
+    # Output is float32, each channel has ~zero mean and ~unit variance.
+    # This is the tensor you would feed into the CRAFT model.
+    normalised = normalizeMeanVariance(resized)
+    print(f"[3] Normalised  min/max: {normalised.min():.3f} / {normalised.max():.3f}")
+
+    # ---- Step 4: Denormalise (round-trip check) -----------------------------
+    # Reverses step 3 — the result should look identical to `resized`.
+    restored = denormalizeMeanVariance(normalised)
+    print(f"[4] Restored    min/max: {restored.min()} / {restored.max()}  dtype: {restored.dtype}")
+    cv2.imwrite("example_4_restored.jpg", restored[:, :, ::-1])
+
+    # ---- Step 5: Fake score map → heatmap -----------------------------------
+    # cvt2HeatmapImg expects a 2-D float array with values in [0, 1].
+    # We take the red channel of the normalised image and rescale it to [0, 1]
+    # just to have something meaningful to visualise.
+    red_channel = normalised[:, :, 0]                          # shape (H, W)
+    score_map = (red_channel - red_channel.min()) / (red_channel.max() - red_channel.min() + 1e-6)
+    heatmap = cvt2HeatmapImg(score_map)
+    print(f"[5] Heatmap shape      : {heatmap.shape}  dtype: {heatmap.dtype}")
+    cv2.imwrite("example_5_heatmap.jpg", heatmap)
+
+    print("\nSaved files:")
+    print("  example_1_loaded.jpg   — raw loaded image")
+    print("  example_2_resized.jpg  — after resize_aspect_ratio")
+    print("  example_4_restored.jpg — after normalize then denormalize (should match #2)")
+    print("  example_5_heatmap.jpg  — JET heatmap of the red channel score map")
+
+
+if __name__ == "__main__":
+    image_path = "/media/mostafahaggag/D/Data/OCR/intern_data/DATASET_OCR/example_maz/Image_0000_20260213114455.bmp"
+    example_usage(image_path)
